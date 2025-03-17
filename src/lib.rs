@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, marker::PhantomData, ops::Deref};
+use std::{
+    collections::VecDeque,
+    marker::PhantomData,
+    mem::MaybeUninit,
+    ops::{Deref, DerefMut},
+};
 
 type Counter = u32;
 
@@ -35,6 +40,37 @@ impl<'a, T> Drop for BorrowRead<'a, T> {
             unread: todo!(),
             reader: todo!(),
         });
+    }
+}
+
+struct BorrowWrite<'a, T> {
+    obj: &'a mut MaybeUninit<T>,
+    writer: &'a mut Publisher<T>,
+}
+
+impl<'a, T> Deref for BorrowWrite<'a, T> {
+    type Target = MaybeUninit<T>;
+
+    fn deref(&'_ self) -> &'_ Self::Target {
+        self.obj
+    }
+}
+
+impl<'a, T> DerefMut for BorrowWrite<'a, T> {
+    fn deref_mut(&'_ mut self) -> &'_ mut Self::Target {
+        self.obj
+    }
+}
+
+impl<'a, T> Drop for BorrowWrite<'a, T> {
+    fn drop(&mut self) {
+        todo!()
+    }
+}
+
+impl<'a, T> BorrowWrite<'a, T> {
+    pub fn finish(self) {
+        todo!()
     }
 }
 
@@ -79,7 +115,7 @@ pub struct Publisher<T> {
 }
 
 impl<T> Publisher<T> {
-    fn publish(&mut self, obj: T) {
+    pub fn publish(&mut self, obj: T) {
         self.data.push_back(obj);
         if let Some(data) = self.data.back_mut() {
             for i in self.readers.iter_mut() {
@@ -102,7 +138,11 @@ impl<T> Publisher<T> {
         todo!()
     }
 
-    fn new() -> Self {
+    pub fn allocate(&mut self) -> BorrowWrite<T> {
+        todo!()
+    }
+
+    pub fn new() -> Self {
         Self {
             data: VecDeque::new(),
             first_count: Default::default(),
@@ -124,5 +164,12 @@ mod test {
         let mut r1 = StreamReader::new();
         p.add_reader(ConsumerInfo::from_reader(&mut r1));
         assert!(r1.read().unwrap().deref() == &1);
+        let mut r2 = StreamReader::new();
+        p.add_reader(ConsumerInfo::from_reader(&mut r2));
+        let mut w = p.allocate();
+        w.write(2);
+        w.finish();
+        assert!(r2.read().unwrap().deref() == &2);
+        assert!(r1.read().unwrap().deref() == &2);
     }
 }
