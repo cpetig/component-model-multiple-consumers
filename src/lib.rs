@@ -5,7 +5,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-type Counter = u32;
+type Counter = usize;
 
 struct ConsumerInfo<T> {
     unread: Counter,
@@ -24,6 +24,8 @@ impl<T> ConsumerInfo<T> {
 struct BorrowRead<'a, T> {
     obj: &'a T,
     reader: &'a mut StreamReader<T>,
+    source: *mut Publisher<T>,
+    counter: Counter,
 }
 
 impl<'a, T> Deref for BorrowRead<'a, T> {
@@ -36,9 +38,9 @@ impl<'a, T> Deref for BorrowRead<'a, T> {
 
 impl<'a, T> Drop for BorrowRead<'a, T> {
     fn drop(&mut self) {
-        unsafe { &mut *self.reader.source.unwrap() }.reader_done(ConsumerInfo {
-            unread: todo!(),
-            reader: todo!(),
+        unsafe { &mut *self.reader.source }.reader_done(ConsumerInfo {
+            unread: self.counter,
+            reader: self.reader,
         });
     }
 }
@@ -76,25 +78,27 @@ impl<'a, T> BorrowWrite<'a, T> {
 
 struct StreamReader<T> {
     phantom: PhantomData<T>,
-    source: Option<*mut Publisher<T>>,
-    unread_data: VecDeque<*const T>,
+    source: *mut Publisher<T>,
+    unread_data: VecDeque<(*const T, Counter)>,
 }
 
 impl<T> StreamReader<T> {
-    fn new_data(&mut self, data: &T) {
-        self.unread_data.push_back(data as *const T);
+    fn new_data(&mut self, data: &T, count: Counter) {
+        self.unread_data.push_back((data as *const T, count));
     }
     fn read(&mut self) -> Option<BorrowRead<'_, T>> {
         let data = self.unread_data.pop_front();
-        data.map(|ptr| BorrowRead {
+        data.map(|(ptr, counter)| BorrowRead {
+            source: self.source,
             obj: unsafe { &*ptr },
             reader: self,
+            counter,
         })
     }
     fn new() -> Self {
         Self {
             phantom: PhantomData,
-            source: None,
+            source: core::ptr::null_mut(),
             unread_data: vec![].into(),
         }
     }
@@ -102,12 +106,13 @@ impl<T> StreamReader<T> {
 
 impl<T> Drop for StreamReader<T> {
     fn drop(&mut self) {
-        if let Some(pblsh) = self.source {
-            unsafe { &mut *pblsh }.remove_reader(self);
+        if !self.source.is_null() {
+            unsafe { &mut *self.source }.remove_reader(self);
         }
     }
 }
 
+// aka StreamWriter
 pub struct Publisher<T> {
     data: VecDeque<T>,
     first_count: Counter,
@@ -116,26 +121,34 @@ pub struct Publisher<T> {
 
 impl<T> Publisher<T> {
     pub fn publish(&mut self, obj: T) {
+        let newcount = self.first_count.wrapping_add(self.data.len());
         self.data.push_back(obj);
         if let Some(data) = self.data.back_mut() {
             for i in self.readers.iter_mut() {
-                unsafe { &mut *i.reader }.new_data(data);
+                unsafe { &mut *i.reader }.new_data(data, newcount);
             }
         }
     }
     fn add_reader(&mut self, info: ConsumerInfo<T>) {
         let reader = unsafe { &mut *info.reader };
-        reader.source.replace(self as *mut _);
-        for i in self.data.iter() {
-            reader.new_data(i);
+        reader.source = self as *mut _;
+        for (n, i) in self.data.iter().enumerate() {
+            reader.new_data(i, self.first_count.wrapping_add(n));
         }
         self.readers.push(info);
     }
     fn reader_done(&mut self, info: ConsumerInfo<T>) {
+        let min_used_minus_first = self.data.len();
+        for i in self.readers.iter_mut() {
+            if i.reader == info.reader {
+                unsafe { &mut *i.reader }.unread_data = info.unread.wrapping_add(1);
+            }
+        }
         todo!()
     }
     fn remove_reader(&mut self, rd: &mut StreamReader<T>) {
-        todo!()
+        let addr = rd as *mut _;
+        self.readers.retain(|e| e.reader != addr);
     }
 
     pub fn allocate(&mut self) -> BorrowWrite<T> {
