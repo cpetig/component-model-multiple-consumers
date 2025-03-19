@@ -48,6 +48,8 @@ impl<'a, T> Drop for BorrowRead<'a, T> {
 struct BorrowWrite<'a, T> {
     obj: &'a mut MaybeUninit<T>,
     writer: &'a mut Publisher<T>,
+    newcount: Counter,
+    written: bool,
 }
 
 impl<'a, T> Deref for BorrowWrite<'a, T> {
@@ -66,13 +68,18 @@ impl<'a, T> DerefMut for BorrowWrite<'a, T> {
 
 impl<'a, T> Drop for BorrowWrite<'a, T> {
     fn drop(&mut self) {
-        todo!()
+        if !self.written {
+            todo!("cleanup");
+        }
     }
 }
 
 impl<'a, T> BorrowWrite<'a, T> {
-    pub fn finish(self) {
-        todo!()
+    pub fn finish(mut self) {
+        for i in self.writer.readers.iter_mut() {
+            unsafe { &mut *i.reader }.new_data(self.obj, self.newcount);
+        }
+        self.written = true;
     }
 }
 
@@ -83,8 +90,8 @@ struct StreamReader<T> {
 }
 
 impl<T> StreamReader<T> {
-    fn new_data(&mut self, data: &T, count: Counter) {
-        self.unread_data.push_back((data as *const T, count));
+    fn new_data(&mut self, data: &MaybeUninit<T>, count: Counter) {
+        self.unread_data.push_back((data.as_ptr(), count));
     }
     fn read(&mut self) -> Option<BorrowRead<'_, T>> {
         let data = self.unread_data.pop_front();
@@ -114,7 +121,7 @@ impl<T> Drop for StreamReader<T> {
 
 // aka StreamWriter
 pub struct Publisher<T> {
-    data: VecDeque<T>,
+    data: VecDeque<MaybeUninit<T>>,
     first_count: Counter,
     readers: Vec<ConsumerInfo<T>>,
 }
@@ -122,7 +129,7 @@ pub struct Publisher<T> {
 impl<T> Publisher<T> {
     pub fn publish(&mut self, obj: T) {
         let newcount = self.first_count.wrapping_add(self.data.len());
-        self.data.push_back(obj);
+        self.data.push_back(MaybeUninit::new(obj));
         if let Some(data) = self.data.back_mut() {
             for i in self.readers.iter_mut() {
                 unsafe { &mut *i.reader }.new_data(data, newcount);
@@ -138,21 +145,38 @@ impl<T> Publisher<T> {
         self.readers.push(info);
     }
     fn reader_done(&mut self, info: ConsumerInfo<T>) {
-        let min_used_minus_first = self.data.len();
+        let mut min_used_minus_first = self.data.len();
         for i in self.readers.iter_mut() {
             if i.reader == info.reader {
-                unsafe { &mut *i.reader }.unread_data = info.unread.wrapping_add(1);
+                i.unread = info.unread.wrapping_add(1);
+            }
+            if i.unread.wrapping_sub(self.first_count) < min_used_minus_first {
+                min_used_minus_first = i.unread.wrapping_sub(self.first_count);
             }
         }
-        todo!()
+        if min_used_minus_first > 0 {
+            self.first_count += min_used_minus_first;
+            for _ in 0..min_used_minus_first {
+                self.data.pop_front();
+            }
+        }
     }
     fn remove_reader(&mut self, rd: &mut StreamReader<T>) {
         let addr = rd as *mut _;
         self.readers.retain(|e| e.reader != addr);
     }
 
+    // if you allocate multiple times, please finish in order
     pub fn allocate(&mut self) -> BorrowWrite<T> {
-        todo!()
+        let newcount = self.first_count.wrapping_add(self.data.len());
+        self.data.push_back(MaybeUninit::uninit());
+        let unbound_self_ref = unsafe { &mut *(self as *mut _) };
+        BorrowWrite {
+            obj: self.data.back_mut().unwrap(),
+            writer: unbound_self_ref,
+            newcount,
+            written: false,
+        }
     }
 
     pub fn new() -> Self {
