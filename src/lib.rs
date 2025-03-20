@@ -21,7 +21,7 @@ impl<T> ConsumerInfo<T> {
     }
 }
 
-struct BorrowRead<'a, T> {
+pub struct BorrowRead<'a, T> {
     obj: &'a T,
     reader: &'a mut StreamReader<T>,
     source: *mut Publisher<T>,
@@ -45,7 +45,7 @@ impl<'a, T> Drop for BorrowRead<'a, T> {
     }
 }
 
-struct BorrowWrite<'a, T> {
+pub struct BorrowWrite<'a, T> {
     obj: &'a mut MaybeUninit<T>,
     writer: &'a mut Publisher<T>,
     newcount: Counter,
