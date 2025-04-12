@@ -7,13 +7,14 @@ use std::{
 
 type Counter = usize;
 
-struct ConsumerInfo<T> {
+/// Subscriber information
+pub struct ConsumerInfo<T> {
     unread: Counter,
     reader: *mut StreamReader<T>,
 }
 
 impl<T> ConsumerInfo<T> {
-    fn from_reader(r: &mut StreamReader<T>) -> Self {
+    pub fn from_reader(r: &mut StreamReader<T>) -> Self {
         Self {
             unread: Default::default(),
             reader: r as *mut StreamReader<T>,
@@ -21,6 +22,7 @@ impl<T> ConsumerInfo<T> {
     }
 }
 
+/// Reader-side lock into data
 pub struct BorrowRead<'a, T> {
     obj: &'a T,
     reader: &'a mut StreamReader<T>,
@@ -45,6 +47,7 @@ impl<'a, T> Drop for BorrowRead<'a, T> {
     }
 }
 
+/// Write lock into data
 pub struct BorrowWrite<'a, T> {
     obj: &'a mut MaybeUninit<T>,
     writer: &'a mut Publisher<T>,
@@ -83,7 +86,8 @@ impl<'a, T> BorrowWrite<'a, T> {
     }
 }
 
-struct StreamReader<T> {
+/// Consumer object
+pub struct StreamReader<T> {
     phantom: PhantomData<T>,
     source: *mut Publisher<T>,
     unread_data: VecDeque<(*const T, Counter)>,
@@ -93,7 +97,7 @@ impl<T> StreamReader<T> {
     fn new_data(&mut self, data: &MaybeUninit<T>, count: Counter) {
         self.unread_data.push_back((data.as_ptr(), count));
     }
-    fn read(&mut self) -> Option<BorrowRead<'_, T>> {
+    pub fn read(&mut self) -> Option<BorrowRead<'_, T>> {
         let data = self.unread_data.pop_front();
         data.map(|(ptr, counter)| BorrowRead {
             source: self.source,
@@ -102,7 +106,7 @@ impl<T> StreamReader<T> {
             counter,
         })
     }
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             phantom: PhantomData,
             source: core::ptr::null_mut(),
@@ -119,6 +123,7 @@ impl<T> Drop for StreamReader<T> {
     }
 }
 
+/// Publisher object
 // aka StreamWriter
 pub struct Publisher<T> {
     data: VecDeque<MaybeUninit<T>>,
@@ -136,7 +141,12 @@ impl<T> Publisher<T> {
             }
         }
     }
-    fn add_reader(&mut self, info: ConsumerInfo<T>) {
+    /// Add a new reader to the system
+    pub fn add_stream_reader(&mut self, reader: &mut StreamReader<T>) {
+        self.add_reader(ConsumerInfo::from_reader(reader))
+    }
+    /// Please prefer add_stream_reader because it is more simple
+    pub fn add_reader(&mut self, info: ConsumerInfo<T>) {
         let reader = unsafe { &mut *info.reader };
         reader.source = self as *mut _;
         for (n, i) in self.data.iter().enumerate() {
@@ -166,7 +176,9 @@ impl<T> Publisher<T> {
         self.readers.retain(|e| e.reader != addr);
     }
 
-    // if you allocate multiple times, please finish in order
+    /// Allocate data for in-place writing
+    ///
+    /// Note: if you allocate multiple times, please finish in order
     pub fn allocate(&mut self) -> BorrowWrite<T> {
         let newcount = self.first_count.wrapping_add(self.data.len());
         self.data.push_back(MaybeUninit::uninit());
@@ -190,7 +202,7 @@ impl<T> Publisher<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::{ConsumerInfo, Publisher, StreamReader};
+    use crate::{Publisher, StreamReader};
     use std::ops::Deref;
 
     #[test]
@@ -199,10 +211,10 @@ mod test {
         let mut p: Publisher<u32> = Publisher::new();
         p.publish(1);
         let mut r1 = StreamReader::new();
-        p.add_reader(ConsumerInfo::from_reader(&mut r1));
+        p.add_stream_reader(&mut r1);
         assert!(r1.read().unwrap().deref() == &1);
         let mut r2 = StreamReader::new();
-        p.add_reader(ConsumerInfo::from_reader(&mut r2));
+        p.add_stream_reader(&mut r2);
         let mut w = p.allocate();
         w.write(2);
         w.finish();
