@@ -8,13 +8,13 @@ use std::{
 type Counter = usize;
 
 /// Subscriber information
-pub struct ConsumerInfo<T> {
+struct ConsumerInfo<T> {
     unread: Counter,
     reader: *mut StreamReader<T>,
 }
 
 impl<T> ConsumerInfo<T> {
-    pub fn from_reader(r: &mut StreamReader<T>) -> Self {
+    fn from_reader(r: &mut StreamReader<T>) -> Self {
         Self {
             unread: Default::default(),
             reader: r as *mut StreamReader<T>,
@@ -146,7 +146,7 @@ impl<T> Publisher<T> {
         self.add_reader(ConsumerInfo::from_reader(reader))
     }
     /// Please prefer add_stream_reader because it is more simple
-    pub fn add_reader(&mut self, info: ConsumerInfo<T>) {
+    fn add_reader(&mut self, info: ConsumerInfo<T>) {
         let reader = unsafe { &mut *info.reader };
         reader.source = self as *mut _;
         for (n, i) in self.data.iter().enumerate() {
