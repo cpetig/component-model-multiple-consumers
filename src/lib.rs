@@ -91,11 +91,15 @@ pub struct StreamReader<T> {
     phantom: PhantomData<T>,
     source: *mut Publisher<T>,
     unread_data: VecDeque<(*const T, Counter)>,
+    notifier: Option<Box<dyn Fn()>>,
 }
 
 impl<T> StreamReader<T> {
     fn new_data(&mut self, data: &MaybeUninit<T>, count: Counter) {
         self.unread_data.push_back((data.as_ptr(), count));
+        if let Some(notifier) = &self.notifier {
+            notifier();
+        }
     }
     pub fn read(&mut self) -> Option<BorrowRead<'_, T>> {
         let data = self.unread_data.pop_front();
@@ -106,11 +110,15 @@ impl<T> StreamReader<T> {
             counter,
         })
     }
+    pub fn set_notification(&mut self, n: Box<dyn Fn()>) {
+        self.notifier.replace(n);
+    }
     pub fn new() -> Self {
         Self {
             phantom: PhantomData,
             source: core::ptr::null_mut(),
             unread_data: vec![].into(),
+            notifier: None,
         }
     }
 }
